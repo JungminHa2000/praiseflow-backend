@@ -3,6 +3,7 @@ import multer from "multer";
 import sharp from "sharp";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 
 const router = express.Router();
@@ -77,24 +78,53 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
       finalFilePath = processedPath;
     }
 
-    // -- SAVE TO DATABASE --
-    // Create a Piece record in Postgres via Prisma.
-    // processingStatus starts as "pending" — it will change to
-    // "processing" when we send it to Claude, then "ready" when done.
-    const piece = await prisma.piece.create({
-      data: {
-        title,
-        folderId,
-        fileUrl: finalFilePath,
-        fileType: req.file.mimetype,
-        processingStatus: "pending",
-      },
-    });
+ // -- COMPUTE FILE HASH --
+// Create a SHA-256 hash of the file contents. If two files
+// have identical content, they produce the same hash.
+const fileBuffer = fs.readFileSync(finalFilePath);
+const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
-    res.status(201).json({
-      message: "File uploaded successfully",
-      piece,
-    });
+// -- CHECK FOR DUPLICATES --
+const existingPiece = await prisma.piece.findFirst({
+  where: { fileHash },
+});
+
+// If a duplicate exists and the user didn't explicitly allow it,
+// return a warning with the existing piece info
+const allowDuplicate = req.body.allowDuplicate === "true";
+
+if (existingPiece && !allowDuplicate) {
+  // Clean up the uploaded file since we're not saving it
+  fs.unlinkSync(finalFilePath);
+
+  res.status(409).json({
+    error: "Duplicate file detected",
+    message: `This file has already been uploaded as "${existingPiece.title}".`,
+    existingPiece: {
+      id: existingPiece.id,
+      title: existingPiece.title,
+    },
+    fileHash,
+  });
+  return;
+}
+
+// -- SAVE TO DATABASE --
+const piece = await prisma.piece.create({
+  data: {
+    title,
+    folderId,
+    fileUrl: finalFilePath,
+    fileType: req.file.mimetype,
+    fileHash,
+    processingStatus: "pending",
+  },
+});
+
+res.status(201).json({
+  message: "File uploaded successfully",
+  piece,
+});
   } catch (error) {
     console.error("Upload error:", JSON.stringify(error, null, 2));
 if (error instanceof Error) {

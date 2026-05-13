@@ -32,6 +32,31 @@ router.get("/", async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// -- GET ALL PIECES (flat list) --
+// GET /api/library/all-songs
+// Returns every piece the user has, regardless of folder
+router.get("/all-songs", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const pieces = await prisma.piece.findMany({
+        where: {
+          folder: {
+            userId: req.userId,
+          },
+        },
+        include: {
+          analysis: true,
+          folder: true,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+  
+      res.json({ pieces });
+    } catch (error) {
+      console.error("All songs error:", error);
+      res.status(500).json({ error: "Failed to load songs" });
+    }
+  });
+
 // -- CREATE A FOLDER --
 // POST /api/library/folders
 router.post("/folders", async (req: AuthenticatedRequest, res: Response) => {
@@ -91,4 +116,148 @@ router.delete("/folders/:id", async (req: AuthenticatedRequest, res: Response) =
   }
 });
 
+// -- RENAME A PIECE --
+// PATCH /api/library/pieces/:id/rename
+router.patch("/pieces/:id/rename", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { title } = req.body;
+  
+      if (!title) {
+        res.status(400).json({ error: "Title is required" });
+        return;
+      }
+  
+      const piece = await prisma.piece.update({
+        where: { id: req.params.id as string },
+        data: { title },
+      });
+  
+      res.json({ piece });
+    } catch (error) {
+      console.error("Rename piece error:", error);
+      res.status(500).json({ error: "Failed to rename piece" });
+    }
+  });
+// -- DELETE A PIECE --
+// DELETE /api/library/pieces/:id
+router.delete("/pieces/:id", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await prisma.piece.delete({
+        where: { id: req.params.id as string },
+      });
+  
+      res.json({ message: "Piece deleted" });
+    } catch (error) {
+      console.error("Delete piece error:", error);
+      res.status(500).json({ error: "Failed to delete piece" });
+    }
+  });
+  // -- MOVE A PIECE TO ANOTHER FOLDER --
+// PATCH /api/library/pieces/:id/move
+router.patch("/pieces/:id/move", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { targetFolderId } = req.body;
+  
+      if (!targetFolderId) {
+        res.status(400).json({ error: "targetFolderId is required" });
+        return;
+      }
+  
+      const piece = await prisma.piece.update({
+        where: { id: req.params.id as string },
+        data: { folderId: targetFolderId },
+        include: { analysis: true },
+      });
+  
+      res.json({ message: "Piece moved", piece });
+    } catch (error) {
+      console.error("Move piece error:", error);
+      res.status(500).json({ error: "Failed to move piece" });
+    }
+  });
+  
+  // -- COPY A PIECE TO ANOTHER FOLDER --
+  // POST /api/library/pieces/:id/copy
+  router.post("/pieces/:id/copy", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { targetFolderId } = req.body;
+  
+      if (!targetFolderId) {
+        res.status(400).json({ error: "targetFolderId is required" });
+        return;
+      }
+  
+      // Load the original piece with all its related data
+      const original = await prisma.piece.findUnique({
+        where: { id: req.params.id as string },
+        include: {
+          analysis: true,
+          improvSuggestions: true,
+        },
+      });
+  
+      if (!original) {
+        res.status(404).json({ error: "Piece not found" });
+        return;
+      }
+  
+      // Create a copy of the piece in the target folder
+      const copy = await prisma.piece.create({
+        data: {
+          title: `${original.title} (copy)`,
+          fileUrl: original.fileUrl,
+          fileType: original.fileType,
+          processingStatus: original.processingStatus,
+          folderId: targetFolderId,
+        },
+      });
+  
+      // Copy the analysis if it exists
+      if (original.analysis) {
+        await prisma.analysis.create({
+          data: {
+            pieceId: copy.id,
+            keySignature: original.analysis.keySignature,
+            timeSignature: original.analysis.timeSignature,
+            chartType: original.analysis.chartType,
+            songTitle: original.analysis.songTitle,
+            melodyRecognised: original.analysis.melodyRecognised,
+            chordProgression: original.analysis.chordProgression as any,
+            structureSections: original.analysis.structureSections as any,
+            leadNotes: original.analysis.leadNotes as any,
+            tempo: original.analysis.tempo,
+            confidenceLevel: original.analysis.confidenceLevel,
+            warnings: original.analysis.warnings as any,
+            rawClaudeResponse: original.analysis.rawClaudeResponse,
+          },
+        });
+      }
+  
+      // Copy all improv suggestions
+      for (const improv of original.improvSuggestions) {
+        await prisma.improvSuggestion.create({
+          data: {
+            pieceId: copy.id,
+            instrument: improv.instrument,
+            voiceType: improv.voiceType,
+            style: improv.style,
+            suggestions: improv.suggestions as any,
+            pdfUrl: improv.pdfUrl,
+            title: improv.title,
+          },
+        });
+      }
+  
+      // Load the complete copy to return
+      const completeCopy = await prisma.piece.findUnique({
+        where: { id: copy.id },
+        include: { analysis: true },
+      });
+  
+      res.status(201).json({ message: "Piece copied", piece: completeCopy });
+    } catch (error) {
+      console.error("Copy piece error:", error);
+      res.status(500).json({ error: "Failed to copy piece" });
+    }
+  });
 export default router;

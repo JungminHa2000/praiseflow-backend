@@ -22,16 +22,17 @@ model User {
 }
 
 model Folder {
-  id        String   @id @default(uuid())
-  name      String
-  parentId  String?
-  parent    Folder?  @relation("FolderChildren", fields: [parentId], references: [id])
-  children  Folder[] @relation("FolderChildren")
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  pieces    Piece[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String      @id @default(uuid())
+  name       String
+  parentId   String?
+  parent     Folder?     @relation("FolderChildren", fields: [parentId], references: [id])
+  children   Folder[]    @relation("FolderChildren")
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pieces     Piece[]
+  shareLinks ShareLink[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 
   @@index([userId])
 }
@@ -41,6 +42,7 @@ model Piece {
   title             String
   fileUrl           String
   fileType          String
+  fileHash          String?
   processingStatus  String             @default("pending")
   processingError   String?
   folderId          String
@@ -107,8 +109,10 @@ model Annotation {
 
 model ShareLink {
   id        String    @id @default(uuid())
-  pieceId   String
-  piece     Piece     @relation(fields: [pieceId], references: [id], onDelete: Cascade)
+  pieceId   String?
+  piece     Piece?    @relation(fields: [pieceId], references: [id], onDelete: Cascade)
+  folderId  String?
+  folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: Cascade)
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   token     String    @unique @default(uuid())
@@ -118,4 +122,5 @@ model ShareLink {
 
   @@index([token])
   @@index([pieceId])
+  @@index([folderId])
 }

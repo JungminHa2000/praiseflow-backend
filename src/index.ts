@@ -9,6 +9,7 @@ import authRouter from "./routes/auth";
 import libraryRouter from "./routes/library";
 import piecesRouter from "./routes/pieces";
 import shareRouter from "./routes/share";
+import path from "path";
 
 dotenv.config();
 
@@ -17,6 +18,10 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+// Serve uploaded files so the frontend can display them.
+// A file at uploads/my-song.pdf becomes accessible at
+// http://localhost:3000/uploads/my-song.pdf
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // Routes
 // All upload endpoints will be at /api/upload

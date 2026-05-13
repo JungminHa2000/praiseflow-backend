@@ -6,43 +6,33 @@ const router = express.Router();
 
 // -- CREATE A SHARE LINK --
 // POST /api/share
-// Requires authentication — only the song owner can create share links.
-// Generates a unique token and returns a shareable URL.
+// Can share either a single piece OR an entire folder
 router.post("/", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { pieceId } = req.body;
+    const { pieceId, folderId } = req.body;
 
-    if (!pieceId) {
-      res.status(400).json({ error: "pieceId is required" });
+    if (!pieceId && !folderId) {
+      res.status(400).json({ error: "Either pieceId or folderId is required" });
       return;
     }
 
-    // Verify the piece exists
-    const piece = await prisma.piece.findUnique({
-      where: { id: pieceId },
-    });
-
-    if (!piece) {
-      res.status(404).json({ error: "Piece not found" });
-      return;
-    }
-
-    // Create the share link. Prisma auto-generates a UUID token
-    // because of @default(uuid()) in the schema.
     const shareLink = await prisma.shareLink.create({
       data: {
-        pieceId,
+        pieceId: pieceId || null,
+        folderId: folderId || null,
         userId: req.userId!,
-        // Expires in 30 days. Set to null for no expiry.
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
 
+    const shareType = pieceId ? "piece" : "folder";
+
     res.status(201).json({
-      message: "Share link created",
+      message: `Share link created for ${shareType}`,
       shareLink: {
         token: shareLink.token,
         expiresAt: shareLink.expiresAt,
+        type: shareType,
         url: `/shared/${shareLink.token}`,
       },
     });
@@ -52,15 +42,13 @@ router.post("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =
   }
 });
 
-// -- VIEW A SHARED PIECE --
+// -- VIEW A SHARED ITEM --
 // GET /api/share/:token
-// NO authentication required — anyone with the token can view.
-// Returns the piece, its analysis, and any improv suggestions.
+// No auth required. Returns either a piece or a folder with all its pieces.
 router.get("/:token", async (req: Request, res: Response) => {
   try {
     const token = req.params.token as string;
 
-    // Find the share link by its unique token
     const shareLink = await prisma.shareLink.findUnique({
       where: { token },
       include: {
@@ -72,35 +60,56 @@ router.get("/:token", async (req: Request, res: Response) => {
             },
           },
         },
+        folder: {
+          include: {
+            pieces: {
+              include: {
+                analysis: true,
+                improvSuggestions: {
+                  orderBy: { createdAt: "desc" },
+                },
+              },
+              orderBy: { createdAt: "desc" },
+            },
+          },
+        },
       },
     });
 
-    // Check if the link exists
     if (!shareLink) {
       res.status(404).json({ error: "Share link not found" });
       return;
     }
 
-    // Check if the link has been deactivated
     if (!shareLink.isActive) {
       res.status(403).json({ error: "This share link has been deactivated" });
       return;
     }
 
-    // Check if the link has expired
     if (shareLink.expiresAt && shareLink.expiresAt < new Date()) {
       res.status(403).json({ error: "This share link has expired" });
       return;
     }
 
-    res.json({
-      piece: shareLink.piece,
-      sharedBy: shareLink.userId,
-      expiresAt: shareLink.expiresAt,
-    });
+    // Return different shapes depending on what was shared
+    if (shareLink.piece) {
+      res.json({
+        type: "piece",
+        piece: shareLink.piece,
+        expiresAt: shareLink.expiresAt,
+      });
+    } else if (shareLink.folder) {
+      res.json({
+        type: "folder",
+        folder: shareLink.folder,
+        expiresAt: shareLink.expiresAt,
+      });
+    } else {
+      res.status(404).json({ error: "Shared content not found" });
+    }
   } catch (error) {
-    console.error("View shared piece error:", error);
-    res.status(500).json({ error: "Failed to load shared piece" });
+    console.error("View shared item error:", error);
+    res.status(500).json({ error: "Failed to load shared content" });
   }
 });
 
