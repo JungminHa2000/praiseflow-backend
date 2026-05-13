@@ -83,14 +83,28 @@ router.post("/", async (req: Request, res: Response) => {
       - Each syllable in the lyrics gets one entry in harmonyNotes
       - If unsure of a syllable's pitch, use the closest chord tone — never skip
 
-Song details:
-- Key: ${analysis.keySignature}
-- Time signature: ${analysis.timeSignature}
-- Tempo: ${analysis.tempo || "not specified"}
-- Structure: ${JSON.stringify(analysis.structureSections)}
-- Chord progression: ${JSON.stringify(analysis.chordProgression)}
+      Song details:
+      - Key: ${analysis.keySignature}
+      - Time signature: ${analysis.timeSignature}
+      - Tempo: ${analysis.tempo || "not specified"}
+      - Structure: ${JSON.stringify(analysis.structureSections)}
+      - Chord progression: ${JSON.stringify(analysis.chordProgression)}
+      ${analysis.leadNotes && Array.isArray(analysis.leadNotes) ? `- ACTUAL MELODY NOTES (extracted from the lead sheet — use these as the source of truth): ${JSON.stringify(analysis.leadNotes)}` : `- Melody notes: not available from the uploaded chart. You must recall the melody from your knowledge of the song "${analysis.songTitle}".`}
 
-You know the standard melody of this song. Generate the ${voiceType} harmony part that sits naturally above or below the lead melody, using chord tones and traditional voice-leading.
+      ${analysis.leadNotes && Array.isArray(analysis.leadNotes)
+        ? `The actual melody notes are provided above — extracted directly from the uploaded lead sheet. Generate the ${voiceType} harmony by calculating the correct interval from EACH melody note. Do NOT guess or recall from memory — use the provided melody notes as your source of truth.
+      
+      For each melody note, calculate the harmony note:
+      - Alto: typically a major or minor third below the melody note
+      - Soprano: typically a third or fifth above
+      - Tenor: typically a fifth below or third below
+      - Bass: typically an octave below or on the root of the chord
+      
+      Use the actual chord context to decide whether the interval should be major or minor.`
+        : `You must recall the standard melody of "${analysis.songTitle}" from your training data. Generate the ${voiceType} harmony part that sits naturally above or below the lead melody, using chord tones and traditional voice-leading.
+      
+      IMPORTANT: Since you are recalling the melody from memory, some notes may be approximate. Prioritise chord tones and smooth voice leading over exact interval matching.`
+      }
 
 Guidelines:
 - Soprano harmonies usually sit a third or fifth above the melody.

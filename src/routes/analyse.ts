@@ -69,6 +69,22 @@ Analyse this sheet music or chord chart carefully.
 Return ONLY a valid JSON object with NO extra text, markdown, or explanation.
 IMPORTANT: Do NOT include any song lyrics in your response. Only describe the song's structure, chord progression, and musical elements. Skip lyrics entirely.
 
+MELODY EXTRACTION (lead sheets and staff notation ONLY):
+If this is a lead sheet or staff notation where melody notes are visually written on the staff, you MUST extract every single melody note. Add a "melodyNotes" field to your JSON with this structure:
+"melodyNotes": [
+  { "note": "D4", "duration": "q", "beats": 1, "bar": 1, "beat": 1 },
+  { "note": "E4", "duration": "q", "beats": 1, "bar": 1, "beat": 2 },
+  { "note": "F#4", "duration": "h", "beats": 2, "bar": 1, "beat": 3 }
+]
+Rules for melody extraction:
+- Read EVERY note from the staff — do not skip or summarise
+- "note" must be the exact pitch with octave (e.g. "D4", "F#5", "Bb3")
+- "duration" uses: "w" (whole), "h" (half), "q" (quarter), "8" (eighth), "16" (sixteenth)
+- "beats" is the numeric beat value (4, 2, 1, 0.5, 0.25)
+- "bar" is the measure number starting from 1
+- "beat" is which beat within the measure the note starts on
+- Include rests as { "note": "rest", "duration": "q", "beats": 1, "bar": 1, "beat": 4 }
+- If this is a chord chart with NO staff notation, set "melodyNotes" to null
 The JSON must follow this exact structure:
 
 {
@@ -96,8 +112,8 @@ The JSON must follow this exact structure:
   IMPORTANT for chordProgression:
   - The "section" field MUST match exactly one of the names in structureSections
   - Include every chord change in every section, even if sections repeat with the same chords
-  
-  "leadNotes": "Describe the main melody if visible in staff notation, or null if chord chart only",
+
+  "leadNotes": null,
   "confidenceLevel": "high" or "medium" or "low",
   "warnings": ["list any sections that were unclear or hard to read"]
 }`,
@@ -130,7 +146,7 @@ The JSON must follow this exact structure:
           tempo: analysisData.tempo,
           structureSections: analysisData.structureSections,
           chordProgression: analysisData.chordProgression,
-          leadNotes: analysisData.leadNotes,
+          leadNotes: analysisData.melodyNotes || analysisData.leadNotes || null,
           confidenceLevel: analysisData.confidenceLevel,
           warnings: analysisData.warnings,
           rawClaudeResponse: rawResponse,
