@@ -3,13 +3,170 @@ import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "../lib/prisma";
 
 const router = express.Router();
-
 const anthropic = new Anthropic();
 
+// -- MUSIC THEORY HELPERS --
+// These functions validate and correct notes based on key signature
+
+const SHARP_KEYS: Record<string, string[]> = {
+  "C major": [],
+  "G major": ["F#"],
+  "D major": ["F#", "C#"],
+  "A major": ["F#", "C#", "G#"],
+  "E major": ["F#", "C#", "G#", "D#"],
+  "B major": ["F#", "C#", "G#", "D#", "A#"],
+  "F# major": ["F#", "C#", "G#", "D#", "A#", "E#"],
+};
+
+const FLAT_KEYS: Record<string, string[]> = {
+  "F major": ["Bb"],
+  "Bb major": ["Bb", "Eb"],
+  "Eb major": ["Bb", "Eb", "Ab"],
+  "Ab major": ["Bb", "Eb", "Ab", "Db"],
+  "Db major": ["Bb", "Eb", "Ab", "Db", "Gb"],
+};
+
+const MINOR_KEYS: Record<string, string[]> = {
+  "A minor": [],
+  "E minor": ["F#"],
+  "B minor": ["F#", "C#"],
+  "F# minor": ["F#", "C#", "G#"],
+  "C# minor": ["F#", "C#", "G#", "D#"],
+  "D minor": ["Bb"],
+  "G minor": ["Bb", "Eb"],
+  "C minor": ["Bb", "Eb", "Ab"],
+  "F minor": ["Bb", "Eb", "Ab", "Db"],
+};
+
+// Get chord tones for a given chord symbol
+function getChordTones(chord: string): string[] {
+  // Strip bass note (e.g. "D/F#" -> "D")
+  const root = chord.split("/")[0];
+
+  // Common chord mappings
+  const chordMap: Record<string, string[]> = {
+    C: ["C", "E", "G"],
+    "C#": ["C#", "F", "G#"],
+    Db: ["Db", "F", "Ab"],
+    D: ["D", "F#", "A"],
+    Eb: ["Eb", "G", "Bb"],
+    E: ["E", "G#", "B"],
+    F: ["F", "A", "C"],
+    "F#": ["F#", "A#", "C#"],
+    G: ["G", "B", "D"],
+    Ab: ["Ab", "C", "Eb"],
+    A: ["A", "C#", "E"],
+    Bb: ["Bb", "D", "F"],
+    B: ["B", "D#", "F#"],
+  };
+
+  // Handle minor chords
+  const minorMap: Record<string, string[]> = {
+    Cm: ["C", "Eb", "G"],
+    "C#m": ["C#", "E", "G#"],
+    Dm: ["D", "F", "A"],
+    "D#m": ["D#", "F#", "A#"],
+    Ebm: ["Eb", "Gb", "Bb"],
+    Em: ["E", "G", "B"],
+    Fm: ["F", "Ab", "C"],
+    "F#m": ["F#", "A", "C#"],
+    Gm: ["G", "Bb", "D"],
+    "G#m": ["G#", "B", "D#"],
+    Abm: ["Ab", "B", "Eb"],
+    Am: ["A", "C", "E"],
+    Bbm: ["Bb", "Db", "F"],
+    Bm: ["B", "D", "F#"],
+  };
+
+  // Clean up chord name — extract root quality
+  const cleaned = root
+    .replace("add9", "")
+    .replace("add2", "")
+    .replace("sus4", "")
+    .replace("sus2", "")
+    .replace("2", "")
+    .replace("9", "")
+    .replace("11", "")
+    .replace("13", "")
+    .trim();
+
+  // Check for 7th chords
+  if (cleaned.includes("m7") || cleaned.includes("min7")) {
+    const base = cleaned.replace("m7", "m").replace("min7", "m");
+    const tones = minorMap[base];
+    if (tones) {
+      // Add the minor 7th
+      return tones;
+    }
+  }
+
+  if (cleaned.includes("7") || cleaned.includes("maj7")) {
+    const base = cleaned.replace("maj7", "").replace("7", "");
+    const tones = chordMap[base];
+    if (tones) return tones;
+  }
+
+  // Check minor first (longer match)
+  if (cleaned.includes("m")) {
+    const tones = minorMap[cleaned];
+    if (tones) return tones;
+  }
+
+  // Then major
+  const tones = chordMap[cleaned];
+  if (tones) return tones;
+
+  // Fallback: try just the first letter(s)
+  const letter = root.match(/^[A-G][#b]?/)?.[0];
+  if (letter && chordMap[letter]) return chordMap[letter];
+
+  return ["C", "E", "G"]; // ultimate fallback
+}
+
+// Get recommended harmony notes for a voice type given a chord
+function getHarmonyRecommendation(
+  chord: string,
+  voiceType: string,
+  keySignature: string
+): { primary: string; alternatives: string[]; avoid: string[] } {
+  const tones = getChordTones(chord);
+
+  // Voice-specific recommendations based on chord tones
+  switch (voiceType.toLowerCase()) {
+    case "soprano":
+      return {
+        primary: tones[2] || tones[0], // 5th or root
+        alternatives: [tones[1], tones[0]], // 3rd, root
+        avoid: [],
+      };
+    case "alto":
+      return {
+        primary: tones[1] || tones[0], // 3rd or root
+        alternatives: [tones[2], tones[0]], // 5th, root
+        avoid: [],
+      };
+    case "tenor":
+      return {
+        primary: tones[2] || tones[1], // 5th or 3rd
+        alternatives: [tones[0], tones[1]], // root, 3rd
+        avoid: [],
+      };
+    case "bass":
+      return {
+        primary: tones[0], // root
+        alternatives: [tones[2], tones[1]], // 5th, 3rd
+        avoid: [],
+      };
+    default:
+      return {
+        primary: tones[1] || tones[0],
+        alternatives: tones,
+        avoid: [],
+      };
+  }
+}
+
 // -- IMPROV ENDPOINT --
-// POST /api/improv
-// Takes a pieceId plus an instrument or voice type and asks Claude
-// to generate improv suggestions based on the analysed chord progression.
 router.post("/", async (req: Request, res: Response) => {
   try {
     const { pieceId, instrument, voiceType, style } = req.body;
@@ -20,15 +177,10 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     if (!instrument && !voiceType) {
-      res.status(400).json({
-        error: "Either instrument or voiceType is required",
-      });
+      res.status(400).json({ error: "Either instrument or voiceType is required" });
       return;
     }
 
-    // Load the piece and its analysis from the database.
-    // The `include: { analysis: true }` tells Prisma to also fetch
-    // the related Analysis row in the same query.
     const piece = await prisma.piece.findUnique({
       where: { id: pieceId },
       include: { analysis: true },
@@ -51,105 +203,170 @@ router.post("/", async (req: Request, res: Response) => {
     const musicalStyle = style || "contemporary worship";
     const isVocal = !!voiceType;
 
-    // -- VOCAL HARMONY GATING --
-    // If the user requested a vocal harmony but Claude couldn't
-    // recognise the melody, we cannot generate accurate harmony notes.
-    // Return a clear error asking for a lead sheet upload.
-    if (isVocal && !analysis.melodyRecognised) {
-      res.status(400).json({
-        error: "Cannot generate vocal harmony for this song",
-        reason:
-          "To generate accurate note-by-note vocal harmonies, we need the melody. This appears to be a chord chart for a song the AI does not recognise. Please upload a lead sheet that includes the melody on a staff so we can build the harmony line against the actual melody notes.",
-        suggestedAction: "upload_lead_sheet",
-      });
-      return;
-    }
-
-    // -- BUILD THE PROMPT --
-    // Vocal and instrumental requests get different prompts because
-    // the user expects different things: a vocalist needs exact notes
-    // to sing, while an instrumentalist wants idiomatic fills and runs.
     let promptText: string;
 
     if (isVocal) {
-      promptText = `You are an experienced worship music arranger specialising in vocal harmonies.
+      // -- VOCAL HARMONY --
+      // Different approach based on whether we have melody notes or not
 
-      Generate a complete note-by-note ${voiceType} harmony line for the song "${analysis.songTitle}".
+      const hasLeadNotes =
+        analysis.leadNotes &&
+        Array.isArray(analysis.leadNotes) &&
+        (analysis.leadNotes as any[]).length > 0;
 
-      CRITICAL REQUIREMENTS:
-      - Generate a harmony note for EVERY syllable of the lyrics, not a subset
-      - Do not summarise or skip sections, even if sections repeat
-      - For a song section with N syllables, your harmony must contain exactly N notes
-      - Each syllable in the lyrics gets one entry in harmonyNotes
-      - If unsure of a syllable's pitch, use the closest chord tone — never skip
+      if (hasLeadNotes) {
+        // LEAD SHEET PATH: We have actual melody notes
+        // Generate harmony by computing intervals from real notes
+        promptText = `You are an expert vocal arranger for worship music.
 
-      Song details:
-      - Key: ${analysis.keySignature}
-      - Time signature: ${analysis.timeSignature}
-      - Tempo: ${analysis.tempo || "not specified"}
-      - Structure: ${JSON.stringify(analysis.structureSections)}
-      - Chord progression: ${JSON.stringify(analysis.chordProgression)}
-      ${analysis.leadNotes && Array.isArray(analysis.leadNotes) ? `- ACTUAL MELODY NOTES (extracted from the lead sheet — use these as the source of truth): ${JSON.stringify(analysis.leadNotes)}` : `- Melody notes: not available from the uploaded chart. You must recall the melody from your knowledge of the song "${analysis.songTitle}".`}
+I have extracted melody notes from a lead sheet. Generate a ${voiceType} harmony part by calculating the correct harmony note for each melody note.
 
-      ${analysis.leadNotes && Array.isArray(analysis.leadNotes)
-        ? `The actual melody notes are provided above — extracted directly from the uploaded lead sheet. Generate the ${voiceType} harmony by calculating the correct interval from EACH melody note. Do NOT guess or recall from memory — use the provided melody notes as your source of truth.
-      
-      For each melody note, calculate the harmony note:
-      - Alto: typically a major or minor third below the melody note
-      - Soprano: typically a third or fifth above
-      - Tenor: typically a fifth below or third below
-      - Bass: typically an octave below or on the root of the chord
-      
-      Use the actual chord context to decide whether the interval should be major or minor.`
-        : `You must recall the standard melody of "${analysis.songTitle}" from your training data. Generate the ${voiceType} harmony part that sits naturally above or below the lead melody, using chord tones and traditional voice-leading.
-      
-      IMPORTANT: Since you are recalling the melody from memory, some notes may be approximate. Prioritise chord tones and smooth voice leading over exact interval matching.`
-      }
+Song details:
+- Key: ${analysis.keySignature}
+- Time signature: ${analysis.timeSignature}
+- Tempo: ${analysis.tempo || "not specified"}
 
-Guidelines:
-- Soprano harmonies usually sit a third or fifth above the melody.
-- Alto harmonies typically sit a third below the melody or hold inner chord tones.
-- Tenor harmonies sit below the melody, often on the fifth or octave.
-- Bass harmonies move with the root or fifth of each chord.
-- Avoid awkward leaps and respect voice-leading: prefer stepwise motion and small intervals.
-- Account for each section's mood — verses are intimate, choruses build, bridges climax.
+ACTUAL MELODY NOTES (extracted from the lead sheet):
+${JSON.stringify(analysis.leadNotes)}
 
-Return ONLY valid JSON in this exact format with no extra text or markdown:
+CHORD PROGRESSION:
+${JSON.stringify(analysis.chordProgression)}
+
+RULES FOR GENERATING HARMONY:
+- For EACH melody note, calculate the ${voiceType} harmony note
+- Alto: sing a major or minor 3rd below the melody note (use the current chord to determine major vs minor)
+- Soprano: sing a 3rd or 5th above the melody note
+- Tenor: sing a 5th below or 3rd below the melody note
+- Bass: sing the root of the current chord, an octave below the melody
+- Every harmony note MUST be a chord tone (root, 3rd, or 5th of the current chord) or a scale tone in ${analysis.keySignature}
+- Prefer smooth voice leading: move by step (2nds) or small leaps (3rds) between harmony notes
+- Copy the exact duration and beat position from the melody note
+
+Return ONLY valid JSON with no extra text or markdown:
 
 {
   "performerType": "${voiceType} vocals",
   "songTitle": "${analysis.songTitle}",
   "style": "${musicalStyle}",
   "harmonyType": "vocal_part",
+  "generationMethod": "lead_sheet_interval",
+  "sections": [
+    {
+      "name": "Section name",
+      "harmonyNotes": [
+        {
+          "order": 1,
+          "melodyNote": "D4",
+          "harmonyNote": "B3",
+          "chord": "G",
+          "intervalFromMelody": "minor 3rd below",
+          "duration": "q",
+          "beats": 1,
+          "bar": 1,
+          "beat": 1,
+          "syllableCue": "lyric syllable if known"
+        }
+      ],
+      "performanceNote": "Brief guidance for this section"
+    }
+  ],
+  "generalAdvice": "Overall singing guidance"
+}`;
+      } else if (analysis.melodyRecognised && analysis.songTitle) {
+        // CHORD CHART PATH for KNOWN songs:
+        // Generate chord-tone harmony guide instead of guessing exact notes
+        const chordProgression = analysis.chordProgression as any[];
+
+        // Pre-compute harmony recommendations for each chord
+        const harmonyGuide = chordProgression.map((cp: any) => {
+          const rec = getHarmonyRecommendation(
+            cp.chord,
+            voiceType!,
+            analysis.keySignature || "C major"
+          );
+          return {
+            section: cp.section,
+            order: cp.order,
+            chord: cp.chord,
+            chordTones: getChordTones(cp.chord),
+            recommendedNote: rec.primary,
+            alternatives: rec.alternatives,
+          };
+        });
+
+        promptText = `You are an expert worship vocal coach teaching a ${voiceType} singer how to harmonise.
+
+Song: "${analysis.songTitle}" in ${analysis.keySignature}, ${analysis.timeSignature} time.
+Tempo: ${analysis.tempo || "moderate"}
+
+I have pre-computed the chord tones and recommended harmony notes for each chord. Your job is to turn this into a practical, singable guide organized by section.
+
+PRE-COMPUTED HARMONY DATA:
+${JSON.stringify(harmonyGuide, null, 2)}
+
+STRUCTURE:
+${JSON.stringify(analysis.structureSections)}
+
+Generate a section-by-section harmony guide. For each section:
+1. List the chord progression with the recommended ${voiceType} note for each chord
+2. Describe the voice movement between chords (e.g. "stay on B, then step down to A")
+3. Flag any tricky intervals (leaps larger than a 3rd)
+4. Give a performance tip
+
+IMPORTANT: The recommendedNote values are musically correct chord tones. Use them as-is. Your job is to organize them into a readable guide and add voice-leading descriptions between chords.
+
+Return ONLY valid JSON with no extra text or markdown:
+
+{
+  "performerType": "${voiceType} vocals",
+  "songTitle": "${analysis.songTitle}",
+  "style": "${musicalStyle}",
+  "harmonyType": "vocal_chord_guide",
+  "generationMethod": "chord_tone_guide",
   "sections": [
     {
       "name": "Verse 1",
-      "harmonyNotes": [
-        { "order": 1, "chord": "E", "harmonyNote": "G#4", "intervalFromMelody": "third below", "syllableCue": "first syllable", "duration": "q", "beats": 1 },
-        { "order": 2, "chord": "A2", "harmonyNote": "C#5", "intervalFromMelody": "third below", "syllableCue": "next syllable", "duration": "8", "beats": 0.5 }
+      "chordGuide": [
+        {
+          "order": 1,
+          "chord": "G",
+          "harmonyNote": "B",
+          "octaveSuggestion": 4,
+          "chordTones": ["G", "B", "D"],
+          "voiceLeading": "Start on B4"
+        },
+        {
+          "order": 2,
+          "chord": "Cadd9",
+          "harmonyNote": "E",
+          "octaveSuggestion": 4,
+          "chordTones": ["C", "E", "G"],
+          "voiceLeading": "Step up from B to E (ascending 4th) — or stay on B which is also a chord tone"
+        }
       ],
-      "performanceNote": "Sing gently, blending under the lead vocal"
+      "performanceNote": "Keep it gentle and under the melody in the verse"
     }
   ],
-  CRITICAL REQUIREMENTS:
-  - Generate a harmony note for EVERY syllable of the lyrics, not a subset
-  - You MUST use ONLY the section names listed in the song's "Structure" above. Do not invent, add, or rename sections. If the structure says "Verse 1", "Chorus", "Bridge", you must produce sections named exactly "Verse 1", "Chorus", "Bridge" — not "Chorus 1A", not "Instrumental", not anything else
-  - The order of your output sections must match the order in the structure
-  - For each syllable, generate one entry in harmonyNotes with the correct rhythmic duration
-  - If unsure of a syllable's pitch, use the closest chord tone — never skip
-  - Duration values must be ONE of these exact strings: "w" (whole, 4 beats), "h" (half, 2 beats), "q" (quarter, 1 beat), "8" (eighth, 0.5 beats), "16" (sixteenth, 0.25 beats). Do NOT use dots or any other format
-  - Also include "beats" as a number matching the duration (4, 2, 1, 0.5, or 0.25)
-  - The total beats in each section should approximately match barCount × beats-per-bar
-    }
-  ],
-  "generalAdvice": "1 to 2 sentences of overall guidance for performing this harmony"
+  "generalAdvice": "Overall guidance for harmonising this song"
 }`;
+      } else {
+        // CHORD CHART for UNKNOWN songs — can't generate harmony
+        res.status(400).json({
+          error: "Cannot generate vocal harmony for this song",
+          reason:
+            "This is a chord chart for a song the AI does not recognise, and no melody notes are available. Please upload a lead sheet that includes the melody written on a music staff.",
+          suggestedAction: "upload_lead_sheet",
+        });
+        return;
+      }
     } else {
+      // -- INSTRUMENT IMPROV --
+      // This path works great and doesn't need melody data
       promptText = `You are an experienced worship musician and arranger with deep knowledge of ${musicalStyle} style.
 
-You are helping a ${performerType} player add tasteful improvisation and fills to a worship song to make their performance more dynamic and musical.
+You are helping a ${performerType} player add tasteful improvisation and fills to a worship song.
 
-Here is the song analysis:
+Song analysis:
 - Key: ${analysis.keySignature}
 - Time signature: ${analysis.timeSignature}
 - Tempo: ${analysis.tempo || "not specified"}
@@ -158,18 +375,17 @@ Here is the song analysis:
 
 Generate 6 to 10 specific improvisation suggestions tailored for ${performerType}.
 
-For each suggestion, specify:
-- Which section of the song it goes in
-- What type of embellishment it is (fill, run, harmony, counter-melody, sustain, rhythmic figure)
-- A clear description of what to play, using musical language the performer will understand
-- The chord context it fits over
-- A difficulty rating: beginner, intermediate, or advanced
-- A short rationale explaining why this works musically
+For each suggestion specify:
+- Which section it goes in
+- Type: fill, run, harmony, counter-melody, sustain, or rhythmic figure
+- A clear description using musical language the performer will understand
+- The chord context
+- Difficulty: beginner, intermediate, or advanced
+- A short rationale
 
-Mix difficulty levels so beginners and advanced players both get something useful.
-Make suggestions idiomatic to ${performerType} — what a real worship ${performerType} player would actually play.
+Make suggestions idiomatic to ${performerType}.
 
-Return ONLY valid JSON in this exact format with no extra text or markdown:
+Return ONLY valid JSON with no extra text or markdown:
 
 {
   "performerType": "${performerType}",
@@ -179,13 +395,13 @@ Return ONLY valid JSON in this exact format with no extra text or markdown:
     {
       "section": "Verse 1",
       "type": "fill",
-      "description": "Right hand ascending arpeggio E-G#-B-E over two beats on beat 4",
-      "chordContext": "E major to A2",
+      "description": "Description of what to play",
+      "chordContext": "G to Cadd9",
       "difficulty": "beginner",
-      "rationale": "Smoothly bridges the chord change and adds forward motion"
+      "rationale": "Why this works"
     }
   ],
-  "generalAdvice": "1 to 2 sentences of overall guidance for performing this song"
+  "generalAdvice": "Overall performance guidance"
 }`;
     }
 
@@ -201,13 +417,11 @@ Return ONLY valid JSON in this exact format with no extra text or markdown:
       ],
     });
 
-    // Extract the text response from Claude
     const rawResponse = message.content
       .filter((block) => block.type === "text")
       .map((block) => (block as { type: "text"; text: string }).text)
       .join("");
 
-    // Strip any accidental markdown fences
     const cleanedResponse = rawResponse
       .replace(/```json/g, "")
       .replace(/```/g, "")
@@ -215,7 +429,6 @@ Return ONLY valid JSON in this exact format with no extra text or markdown:
 
     const improvData = JSON.parse(cleanedResponse);
 
-    // Save to the database
     const improvSuggestion = await prisma.improvSuggestion.create({
       data: {
         pieceId,

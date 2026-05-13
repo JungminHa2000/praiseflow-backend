@@ -3,6 +3,31 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { prisma } from "../lib/prisma";
 
+const SHARP_KEYS: Record<string, string[]> = {
+    "C major": [],
+    "G major": ["F#"],
+    "D major": ["F#", "C#"],
+    "A major": ["F#", "C#", "G#"],
+    "E major": ["F#", "C#", "G#", "D#"],
+    "B major": ["F#", "C#", "G#", "D#", "A#"],
+  };
+  
+  const FLAT_KEYS: Record<string, string[]> = {
+    "F major": ["Bb"],
+    "Bb major": ["Bb", "Eb"],
+    "Eb major": ["Bb", "Eb", "Ab"],
+    "Ab major": ["Bb", "Eb", "Ab", "Db"],
+  };
+  
+  const MINOR_KEYS: Record<string, string[]> = {
+    "A minor": [],
+    "E minor": ["F#"],
+    "B minor": ["F#", "C#"],
+    "D minor": ["Bb"],
+    "G minor": ["Bb", "Eb"],
+    "C minor": ["Bb", "Eb", "Ab"],
+  };
+
 const router = express.Router();
 
 const anthropic = new Anthropic();
@@ -152,6 +177,119 @@ The JSON must follow this exact structure:
           rawClaudeResponse: rawResponse,
         },
       });
+
+      // -- SECOND PASS: Extract melody notes for lead sheets --
+// If the chart type is a lead sheet, make a focused second call
+// to extract just the melody notes measure by measure
+if (analysisData.chartType === "lead_sheet" || analysisData.chartType === "staff_notation") {
+    try {
+      const melodyMessage = await anthropic.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: 16000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              fileContentBlock,
+              {
+                type: "text",
+                text: `You are reading sheet music notation. Focus ONLY on extracting the melody notes from the staff.
+  
+  The key signature is ${analysisData.keySignature || "unknown"}.
+  The time signature is ${analysisData.timeSignature || "4/4"}.
+  
+  TASK: Read each measure left to right, top staff only (melody line). For each note:
+  1. Identify which line or space it sits on
+  2. Apply the key signature (e.g. in G major, all F notes are F#)
+  3. Look for accidentals directly before the note
+  4. Determine the duration from the note head and stem (filled head + stem = quarter, open head + stem = half, open head no stem = whole, filled head + stem + flag = eighth)
+  5. Note any dots (adds 50% to duration)
+  6. Note any rests
+  
+  Read VERY carefully. Take your time with each measure. If a note is ambiguous, flag it.
+  
+  Return ONLY valid JSON with no extra text:
+  
+  {
+    "melodyNotes": [
+      { "bar": 1, "beat": 1, "note": "D4", "duration": "q", "beats": 1 },
+      { "bar": 1, "beat": 2, "note": "E4", "duration": "q", "beats": 1 },
+      { "bar": 1, "beat": 3, "note": "F#4", "duration": "h", "beats": 2 }
+    ],
+    "uncertainNotes": [
+      { "bar": 3, "beat": 2, "note": "B4", "reason": "Could be B4 or C5, note sits between line and space" }
+    ]
+  }`,
+              },
+            ],
+          },
+        ],
+      });
+  
+      const melodyRaw = melodyMessage.content
+        .filter((block) => block.type === "text")
+        .map((block) => (block as { type: "text"; text: string }).text)
+        .join("");
+  
+      const melodyCleaned = melodyRaw
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+  
+      const melodyData = JSON.parse(melodyCleaned);
+  
+      // Validate notes against key signature
+      const keyAccidentals = {
+        ...SHARP_KEYS,
+        ...FLAT_KEYS,
+        ...MINOR_KEYS,
+      }[analysisData.keySignature || "C major"] || [];
+  
+      if (melodyData.melodyNotes && Array.isArray(melodyData.melodyNotes)) {
+        // Auto-correct notes that don't match the key signature
+        melodyData.melodyNotes = melodyData.melodyNotes.map((n: any) => {
+          if (!n.note || n.note === "rest") return n;
+  
+          const noteName = n.note.match(/^([A-G][#b]?)/)?.[1];
+          const octave = n.note.match(/(\d)$/)?.[1];
+  
+          if (noteName && octave) {
+            // Check if this note should have an accidental from the key
+            const naturalNote = noteName.replace(/[#b]/, "");
+            const shouldBeSharp = keyAccidentals.find(
+              (a) => a.replace("#", "").replace("b", "") === naturalNote
+            );
+  
+            if (shouldBeSharp && !noteName.includes("#") && !noteName.includes("b")) {
+              // Note is missing its key signature accidental
+              n.note = shouldBeSharp + octave;
+              n.corrected = true;
+              n.originalNote = noteName + octave;
+            }
+          }
+  
+          return n;
+        });
+      }
+  
+      // Update the analysis with the extracted melody notes
+      await prisma.analysis.update({
+        where: { id: analysis.id },
+        data: {
+          leadNotes: melodyData.melodyNotes || null,
+          warnings: [
+            ...((analysisData.warnings as any[]) || []),
+            ...(melodyData.uncertainNotes || []).map(
+              (u: any) => `Bar ${u.bar}, beat ${u.beat}: ${u.reason}`
+            ),
+          ],
+        },
+      });
+    } catch (melodyError) {
+      console.error("Melody extraction failed (non-fatal):", melodyError);
+      // Don't fail the whole analysis if melody extraction fails
+    }
+  }
 
     await prisma.piece.update({
       where: { id: pieceId },

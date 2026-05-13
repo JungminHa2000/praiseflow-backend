@@ -260,4 +260,40 @@ router.patch("/pieces/:id/move", async (req: AuthenticatedRequest, res: Response
       res.status(500).json({ error: "Failed to copy piece" });
     }
   });
+// -- DELETE AN IMPROV SUGGESTION --
+// DELETE /api/library/improvs/:id
+router.delete("/improvs/:id", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await prisma.improvSuggestion.delete({
+        where: { id: req.params.id as string },
+      });
+      res.json({ message: "Generation deleted" });
+    } catch (error) {
+      console.error("Delete improv error:", error);
+      res.status(500).json({ error: "Failed to delete generation" });
+    }
+  });
+  
+  // -- BULK DELETE IMPROV SUGGESTIONS --
+  // POST /api/library/improvs/bulk-delete
+  router.post("/improvs/bulk-delete", async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { ids } = req.body;
+  
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        res.status(400).json({ error: "ids array is required" });
+        return;
+      }
+  
+      await prisma.improvSuggestion.deleteMany({
+        where: { id: { in: ids } },
+      });
+  
+      res.json({ message: `${ids.length} generations deleted` });
+    } catch (error) {
+      console.error("Bulk delete improv error:", error);
+      res.status(500).json({ error: "Failed to delete generations" });
+    }
+  });
+
 export default router;
